@@ -10,6 +10,7 @@ def start_stream(callback):
     stream = p.open(format=pyaudio.paInt16,
                     channels=1,
                     rate=config.MIC_RATE,
+                    input_device_index = config.DEV_INDEX,
                     input=True,
                     frames_per_buffer=frames_per_buffer)
     overflows = 0
