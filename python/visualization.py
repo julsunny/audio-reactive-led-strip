@@ -14,6 +14,13 @@ _time_prev = time.time() * 1000.0
 _fps = dsp.ExpFilter(val=config.FPS, alpha_decay=0.2, alpha_rise=0.2)
 """The low-pass filter used to estimate frames-per-second"""
 
+pi = pigpio.pi()
+bright = 255
+
+def setLights(pin,brightness):
+    realBrightness = int(int(brightness)*(float(bright) / 255.0))
+    pi.set_PWM_dutycycle(pin, realBrightness)
+
 
 def frames_per_second():
     """Return the estimated frames per second
@@ -128,30 +135,18 @@ def visualize_energy(y):
     """Effect that expands from the center with increasing sound energy"""
     global p
     y = np.copy(y)
-    gain.update(y)
-    y /= gain.value
+    #gain.update(y)
+    #y /= gain.value
     # Scale by the width of the LED strip
-    y *= float((config.N_PIXELS // 2) - 1)
+    #y *= float((config.N_PIXELS // 2) - 1)
     # Map color channels according to energy in the different freq bands
-    scale = 0.9
-    r = int(np.mean(y[:len(y) // 3]**scale))
-    g = int(np.mean(y[len(y) // 3: 2 * len(y) // 3]**scale))
-    b = int(np.mean(y[2 * len(y) // 3:]**scale))
-    # Assign color to different frequency regions
-    p[0, :r] = 255.0
-    p[0, r:] = 0.0
-    p[1, :g] = 255.0
-    p[1, g:] = 0.0
-    p[2, :b] = 255.0
-    p[2, b:] = 0.0
-    p_filt.update(p)
-    p = np.round(p_filt.value)
-    # Apply substantial blur to smooth the edges
-    p[0, :] = gaussian_filter1d(p[0, :], sigma=4.0)
-    p[1, :] = gaussian_filter1d(p[1, :], sigma=4.0)
-    p[2, :] = gaussian_filter1d(p[2, :], sigma=4.0)
-    # Set the new pixel value
-    return np.concatenate((p[:, ::-1], p), axis=1)
+    #scale = 0.9
+    ymax = np.max(y)
+    r = np.mean(y[:len(y) // 3])*255./ymax
+    g = np.mean(y[len(y) // 3 : 2*len(y) // 3])*255.0/ymax
+    b = np.mean(y[2 * len(y) // 3:])*255.0/ymax
+
+    return r,g,b
 
 
 _prev_spectrum = np.tile(0.01, config.N_PIXELS // 2)
@@ -200,8 +195,9 @@ def microphone_update(audio_samples):
     vol = np.max(np.abs(y_data))
     if vol < config.MIN_VOLUME_THRESHOLD:
         print('No audio input. Volume below threshold. Volume:', vol)
-        led.pixels = np.tile(0, (3, config.N_PIXELS))
-        led.update()
+        setLights(config.RED_PIN, 0)
+        setLights(config.GREEN_PIN, 0)
+        setLights(config.BLUE_PIN, 0)
     else:
         # Transform audio input into the frequency domain
         N = len(y_data)
@@ -221,19 +217,11 @@ def microphone_update(audio_samples):
         mel /= mel_gain.value
         mel = mel_smoothing.update(mel)
         # Map filterbank output onto LED strip
-        output = visualization_effect(mel)
-        led.pixels = output
-        led.update()
-        if config.USE_GUI:
-            # Plot filterbank output
-            x = np.linspace(config.MIN_FREQUENCY, config.MAX_FREQUENCY, len(mel))
-            mel_curve.setData(x=x, y=fft_plot_filter.update(mel))
-            # Plot the color channels
-            r_curve.setData(y=led.pixels[0])
-            g_curve.setData(y=led.pixels[1])
-            b_curve.setData(y=led.pixels[2])
-    if config.USE_GUI:
-        app.processEvents()
+        r,g,b = visualization_effect(mel)
+        setLights(config.RED_PIN,r)
+        setLights(config.GREEN_PIN, g)
+        setLights(config.BLUE_PIN, b)
+        
     
     if config.DISPLAY_FPS:
         fps = frames_per_second()
@@ -248,108 +236,11 @@ samples_per_frame = int(config.MIC_RATE / config.FPS)
 # Array containing the rolling audio sample window
 y_roll = np.random.rand(config.N_ROLLING_HISTORY, samples_per_frame) / 1e16
 
-visualization_effect = visualize_spectrum
+visualization_effect = visualize_energy
 """Visualization effect to display on the LED strip"""
 
 
 if __name__ == '__main__':
-    if config.USE_GUI:
-        import pyqtgraph as pg
-        from pyqtgraph.Qt import QtGui, QtCore
-        # Create GUI window
-        app = QtGui.QApplication([])
-        view = pg.GraphicsView()
-        layout = pg.GraphicsLayout(border=(100,100,100))
-        view.setCentralItem(layout)
-        view.show()
-        view.setWindowTitle('Visualization')
-        view.resize(800,600)
-        # Mel filterbank plot
-        fft_plot = layout.addPlot(title='Filterbank Output', colspan=3)
-        fft_plot.setRange(yRange=[-0.1, 1.2])
-        fft_plot.disableAutoRange(axis=pg.ViewBox.YAxis)
-        x_data = np.array(range(1, config.N_FFT_BINS + 1))
-        mel_curve = pg.PlotCurveItem()
-        mel_curve.setData(x=x_data, y=x_data*0)
-        fft_plot.addItem(mel_curve)
-        # Visualization plot
-        layout.nextRow()
-        led_plot = layout.addPlot(title='Visualization Output', colspan=3)
-        led_plot.setRange(yRange=[-5, 260])
-        led_plot.disableAutoRange(axis=pg.ViewBox.YAxis)
-        # Pen for each of the color channel curves
-        r_pen = pg.mkPen((255, 30, 30, 200), width=4)
-        g_pen = pg.mkPen((30, 255, 30, 200), width=4)
-        b_pen = pg.mkPen((30, 30, 255, 200), width=4)
-        # Color channel curves
-        r_curve = pg.PlotCurveItem(pen=r_pen)
-        g_curve = pg.PlotCurveItem(pen=g_pen)
-        b_curve = pg.PlotCurveItem(pen=b_pen)
-        # Define x data
-        x_data = np.array(range(1, config.N_PIXELS + 1))
-        r_curve.setData(x=x_data, y=x_data*0)
-        g_curve.setData(x=x_data, y=x_data*0)
-        b_curve.setData(x=x_data, y=x_data*0)
-        # Add curves to plot
-        led_plot.addItem(r_curve)
-        led_plot.addItem(g_curve)
-        led_plot.addItem(b_curve)
-        # Frequency range label
-        freq_label = pg.LabelItem('')
-        # Frequency slider
-        def freq_slider_change(tick):
-            minf = freq_slider.tickValue(0)**2.0 * (config.MIC_RATE / 2.0)
-            maxf = freq_slider.tickValue(1)**2.0 * (config.MIC_RATE / 2.0)
-            t = 'Frequency range: {:.0f} - {:.0f} Hz'.format(minf, maxf)
-            freq_label.setText(t)
-            config.MIN_FREQUENCY = minf
-            config.MAX_FREQUENCY = maxf
-            dsp.create_mel_bank()
-        freq_slider = pg.TickSliderItem(orientation='bottom', allowAdd=False)
-        freq_slider.addTick((config.MIN_FREQUENCY / (config.MIC_RATE / 2.0))**0.5)
-        freq_slider.addTick((config.MAX_FREQUENCY / (config.MIC_RATE / 2.0))**0.5)
-        freq_slider.tickMoveFinished = freq_slider_change
-        freq_label.setText('Frequency range: {} - {} Hz'.format(
-            config.MIN_FREQUENCY,
-            config.MAX_FREQUENCY))
-        # Effect selection
-        active_color = '#16dbeb'
-        inactive_color = '#FFFFFF'
-        def energy_click(x):
-            global visualization_effect
-            visualization_effect = visualize_energy
-            energy_label.setText('Energy', color=active_color)
-            scroll_label.setText('Scroll', color=inactive_color)
-            spectrum_label.setText('Spectrum', color=inactive_color)
-        def scroll_click(x):
-            global visualization_effect
-            visualization_effect = visualize_scroll
-            energy_label.setText('Energy', color=inactive_color)
-            scroll_label.setText('Scroll', color=active_color)
-            spectrum_label.setText('Spectrum', color=inactive_color)
-        def spectrum_click(x):
-            global visualization_effect
-            visualization_effect = visualize_spectrum
-            energy_label.setText('Energy', color=inactive_color)
-            scroll_label.setText('Scroll', color=inactive_color)
-            spectrum_label.setText('Spectrum', color=active_color)
-        # Create effect "buttons" (labels with click event)
-        energy_label = pg.LabelItem('Energy')
-        scroll_label = pg.LabelItem('Scroll')
-        spectrum_label = pg.LabelItem('Spectrum')
-        energy_label.mousePressEvent = energy_click
-        scroll_label.mousePressEvent = scroll_click
-        spectrum_label.mousePressEvent = spectrum_click
-        energy_click(0)
-        # Layout
-        layout.nextRow()
-        layout.addItem(freq_label, colspan=3)
-        layout.nextRow()
-        layout.addItem(freq_slider, colspan=3)
-        layout.nextRow()
-        layout.addItem(energy_label)
-        layout.addItem(scroll_label)
-        layout.addItem(spectrum_label)
     # Initialize LEDs
     led.update()
     # Start listening to live audio stream
